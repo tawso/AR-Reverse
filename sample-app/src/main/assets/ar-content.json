@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "dictionary": "DICT_4X4_50",
+  "markers": [
+    {
+      "markerId": 7,
+      "physicalSizeMeters": 0.08,
+      "contentKey": "reserve_demo",
+      "title": "Қорық үлгісі",
+      "description": "Бұл — болашақ табиғи қорық материалына арналған демонстрациялық толтырғыш. Нақты дерек емес.",
+      "primitive": "cube",
+      "color": "#2E7D32",
+      "localTransform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotationQuaternion": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.65, 0.65, 0.65]
+      }
+    },
+    {
+      "markerId": 23,
+      "physicalSizeMeters": 0.08,
+      "contentKey": "museum_demo",
+      "title": "Мұражай үлгісі",
+      "description": "Бұл — болашақ мұражай экспонатына арналған демонстрациялық толтырғыш. Нақты дерек емес.",
+      "primitive": "axes",
+      "color": "#D28B36",
+      "localTransform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotationQuaternion": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.8, 0.8, 0.8]
+      }
+    }
+  ]
+}
