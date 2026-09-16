@@ -48,4 +48,13 @@ class CoreTest {
         assertEquals(0f, matrix[9], 1e-6f)
         assertEquals(-1f, matrix[11], 0f)
     }
+
+    @Test fun `состояние проходит retained и lost после grace period`() {
+        val machine = TrackingStateMachine(300)
+        assertEquals(TrackingState.Searching, machine.missed(1000))
+        assertEquals(TrackingState.Tracking(7), machine.observed(7, 1000))
+        assertEquals(TrackingState.TemporarilyLost(7, 250), machine.missed(1250))
+        assertEquals(TrackingState.Lost, machine.missed(1301))
+        assertEquals(TrackingState.Lost, machine.missed(1400))
+    }
 }

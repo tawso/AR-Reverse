@@ -2,6 +2,7 @@ package kz.arkotlinreserve
 
 import android.content.Context
 import android.os.SystemClock
+import android.util.Log
 import android.util.Size
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
@@ -9,6 +10,8 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -22,6 +25,7 @@ import kz.arkotlinreserve.core.MarkerObservation
 import kz.arkotlinreserve.core.PoseSmoother
 import kz.arkotlinreserve.core.SessionDiagnostics
 import kz.arkotlinreserve.core.TrackingState
+import kz.arkotlinreserve.core.TrackingStateMachine
 import kz.arkotlinreserve.renderer.ARRenderView
 import kz.arkotlinreserve.tracking.opencv.OpenCvMarkerTracker
 import kotlinx.coroutines.channels.BufferOverflow
@@ -29,10 +33,10 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
-import org.opencv.android.OpenCVLoader
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
+@androidx.annotation.OptIn(ExperimentalCamera2Interop::class)
 class AndroidARSession internal constructor(
     private val context: Context,
     initialConfig: ARConfig,
@@ -44,40 +48,37 @@ class AndroidARSession internal constructor(
     override val diagnostics = _diagnostics.asStateFlow()
     private val _observations = MutableSharedFlow<MarkerObservation>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     override val observations = _observations.asSharedFlow()
+    private val _activeContent = MutableStateFlow<kz.arkotlinreserve.core.MarkerDefinition?>(null)
+    override val activeContent = _activeContent.asStateFlow()
     private val executor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "ARKotlinReserve-анализ") }
     private val closed = AtomicBoolean(false)
     private var config = initialConfig
     @Volatile private var content = initialContent
     private var tracker = OpenCvMarkerTracker(initialContent.dictionary)
     private val smoother = PoseSmoother()
+    private val stateMachine = TrackingStateMachine(initialConfig.markerLossGraceMillis)
     private var provider: ProcessCameraProvider? = null
     private var owner: LifecycleOwner? = null
     private var previewView: PreviewView? = null
     private var renderView: ARRenderView? = null
     private var intrinsics: Intrinsics? = null
     private var active: MarkerObservation? = null
-    private var lastSeenElapsed = 0L
     private var frames = 0
     private var fpsWindowStarted = SystemClock.elapsedRealtime()
 
-    override fun attach(lifecycleOwner: LifecycleOwner, previewView: PreviewView, renderView: ARRenderView) {
+    override fun attach(lifecycleOwner: LifecycleOwner, view: ARView) {
         check(!closed.get()) { "Сессия уже закрыта" }
         detach()
         owner = lifecycleOwner
-        this.previewView = previewView.apply { scaleType = PreviewView.ScaleType.FIT_CENTER }
-        this.renderView = renderView
+        this.previewView = view.preview
+        this.renderView = view.renderer
         lifecycleOwner.lifecycle.addObserver(this)
         startCamera()
     }
 
-    @OptIn(ExperimentalCamera2Interop::class)
     private fun startCamera() {
         val lifecycleOwner = owner ?: return
         _state.value = TrackingState.CameraStarting
-        if (!OpenCVLoader.initLocal()) {
-            _state.value = TrackingState.Error("Не удалось загрузить OpenCV")
-            return
-        }
         val future = ProcessCameraProvider.getInstance(context)
         future.addListener({
             if (closed.get() || owner !== lifecycleOwner) return@addListener
@@ -86,7 +87,11 @@ class AndroidARSession internal constructor(
                 val preview = Preview.Builder().build().also { it.surfaceProvider = previewView?.surfaceProvider }
                 val quality = config.analysisQuality
                 val analysis = ImageAnalysis.Builder()
-                    .setTargetResolution(Size(quality.width, quality.height))
+                    .setResolutionSelector(
+                        ResolutionSelector.Builder().setResolutionStrategy(
+                            ResolutionStrategy(Size(quality.width, quality.height), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER),
+                        ).build(),
+                    )
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                     .build()
@@ -119,22 +124,22 @@ class AndroidARSession internal constructor(
                 ?: result.observations.minWithOrNull(compareBy<MarkerObservation> { it.reprojectionErrorPixels }.thenBy { it.markerId })
             if (chosen != null) {
                 val filtered = if (config.smoothingEnabled) chosen.copy(pose = smoother.update(chosen.markerId, chosen.pose, chosen.timestampNanos)) else chosen
-                active = filtered; lastSeenElapsed = now
-                _state.value = TrackingState.Tracking(filtered.markerId)
+                active = filtered
+                _activeContent.value = registry.marker(filtered.markerId)
+                _state.value = stateMachine.observed(filtered.markerId, now)
                 _observations.tryEmit(filtered)
                 renderView?.update(filtered, registry.marker(filtered.markerId), CameraGeometry.rotateIntrinsics(camera, image.imageInfo.rotationDegrees), config.showCoordinateAxes)
             } else {
-                val retained = active
-                val lostFor = now - lastSeenElapsed
-                if (retained != null && lostFor <= config.markerLossGraceMillis) {
-                    _state.value = TrackingState.TemporarilyLost(retained.markerId, lostFor)
-                } else {
+                val nextState = stateMachine.missed(now)
+                _state.value = nextState
+                if (nextState is TrackingState.Lost) {
                     active = null; smoother.reset(); renderView?.update(null, null, null, config.showCoordinateAxes)
-                    _state.value = if (lastSeenElapsed == 0L) TrackingState.Searching else TrackingState.Lost
+                    _activeContent.value = null
                 }
             }
             _diagnostics.value = SessionDiagnostics(result.durationMillis, analysisFps, renderView?.rendererFps() ?: 0.0, result.imageWidth, result.imageHeight, active?.markerId, camera.approximate, active?.reprojectionErrorPixels)
         } catch (error: Throwable) {
+            Log.e("ARKotlinReserve", "Ошибка анализа кадра", error)
             _state.value = TrackingState.Error("Ошибка анализа кадра: ${error.message}")
         } finally {
             image.close()
@@ -158,6 +163,7 @@ class AndroidARSession internal constructor(
     override fun updateConfig(config: ARConfig) {
         val resolutionChanged = this.config.analysisQuality != config.analysisQuality
         this.config = config
+        stateMachine.updateGracePeriod(config.markerLossGraceMillis)
         if (resolutionChanged) startCamera()
     }
 
@@ -171,7 +177,7 @@ class AndroidARSession internal constructor(
             }
         }
         content = registry
-        active = null; smoother.reset()
+        active = null; _activeContent.value = null; smoother.reset(); stateMachine.reset()
     }
 
     override fun onResume(owner: LifecycleOwner) { renderView?.onResume() }
@@ -182,15 +188,15 @@ class AndroidARSession internal constructor(
         provider?.unbindAll()
         provider = null; owner = null; previewView = null
         renderView?.update(null, null, null, false)
-        renderView = null; active = null; smoother.reset(); lastSeenElapsed = 0
+        renderView = null; active = null; _activeContent.value = null; smoother.reset(); stateMachine.reset()
         if (!closed.get()) _state.value = TrackingState.Idle
     }
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         detach()
+        executor.execute { tracker.close() }
         executor.shutdown()
-        tracker.close()
         _state.value = TrackingState.Idle
     }
 }

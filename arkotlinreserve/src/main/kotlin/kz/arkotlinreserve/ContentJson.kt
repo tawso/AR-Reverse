@@ -22,14 +22,20 @@ class BundledAssetContentSource(
         } catch (error: Exception) {
             throw IllegalArgumentException("Не удалось прочитать assets/$assetPath", error)
         }
-        val dto = try {
-            Json { ignoreUnknownKeys = false }.decodeFromString<RegistryDto>(text)
-        } catch (error: Exception) {
-            throw IllegalArgumentException("Некорректный JSON в assets/$assetPath: ${error.message}", error)
-        }
-        return try { dto.toRegistry() } catch (error: Exception) {
-            throw IllegalArgumentException("Некорректная конфигурация assets/$assetPath: ${error.message}", error)
-        }
+        return parseContentJson(text, "assets/$assetPath")
+    }
+}
+
+private val strictJson = Json { ignoreUnknownKeys = false }
+
+internal fun parseContentJson(text: String, sourceName: String = "JSON"): ContentRegistry {
+    val dto = try {
+        strictJson.decodeFromString<RegistryDto>(text)
+    } catch (error: Exception) {
+        throw IllegalArgumentException("Некорректный JSON в $sourceName: ${error.message}", error)
+    }
+    return try { dto.toRegistry() } catch (error: Exception) {
+        throw IllegalArgumentException("Некорректная конфигурация $sourceName: ${error.message}", error)
     }
 }
 

@@ -101,18 +101,18 @@ private class PrimitiveRenderer : GLSurfaceView.Renderer {
         Matrix.multiplyMM(modelView, 0, anchor, 0, local, 0)
         Matrix.multiplyMM(mvp, 0, projection, 0, modelView, 0)
         val color = current.marker.colorArgb
-        draw(
-            when (current.marker.primitive) {
-                PrimitiveType.CUBE -> cube
-                PrimitiveType.PLANE -> plane
-                PrimitiveType.AXES -> axes
-            },
-            if (current.marker.primitive == PrimitiveType.AXES) GLES20.GL_LINES else GLES20.GL_TRIANGLES,
-            if (current.marker.primitive == PrimitiveType.CUBE) 36 else if (current.marker.primitive == PrimitiveType.PLANE) 6 else 6,
-            mvp,
-            floatArrayOf(((color shr 16) and 255) / 255f, ((color shr 8) and 255) / 255f, (color and 255) / 255f, ((color shr 24) and 255) / 255f),
-        )
-        if (current.showAxes && current.marker.primitive != PrimitiveType.AXES) draw(axes, GLES20.GL_LINES, 6, mvp, floatArrayOf(1f, 1f, 1f, 1f))
+        if (current.marker.primitive == PrimitiveType.AXES) {
+            drawAxes(mvp)
+        } else {
+            draw(
+                if (current.marker.primitive == PrimitiveType.CUBE) cube else plane,
+                GLES20.GL_TRIANGLES,
+                if (current.marker.primitive == PrimitiveType.CUBE) 36 else 6,
+                mvp,
+                floatArrayOf(((color shr 16) and 255) / 255f, ((color shr 8) and 255) / 255f, (color and 255) / 255f, ((color shr 24) and 255) / 255f),
+            )
+        }
+        if (current.showAxes && current.marker.primitive != PrimitiveType.AXES) drawAxes(mvp)
         countFrame()
     }
 
@@ -139,7 +139,7 @@ private class PrimitiveRenderer : GLSurfaceView.Renderer {
         Matrix.setIdentityM(matrix, 0)
         Matrix.translateM(matrix, 0, t.translation.x, t.translation.y, t.translation.z)
         val q = t.rotation.normalized()
-        val angle = Math.toDegrees((2.0 * kotlin.math.acos(q.w.coerceIn(-1f, 1f))).toDouble()).toFloat()
+        val angle = Math.toDegrees(2.0 * kotlin.math.acos(q.w.coerceIn(-1f, 1f))).toFloat()
         val axisLength = kotlin.math.sqrt(q.x*q.x + q.y*q.y + q.z*q.z)
         if (axisLength > 1e-5f) Matrix.rotateM(matrix, 0, angle, q.x/axisLength, q.y/axisLength, q.z/axisLength)
         val size = marker.physicalSizeMeters
@@ -147,7 +147,13 @@ private class PrimitiveRenderer : GLSurfaceView.Renderer {
         return matrix
     }
 
-    private fun draw(vertices: FloatBuffer, mode: Int, count: Int, matrix: FloatArray, color: FloatArray) {
+    private fun drawAxes(matrix: FloatArray) {
+        draw(axes, GLES20.GL_LINES, 2, matrix, floatArrayOf(1f, 0f, 0f, 1f), 0)
+        draw(axes, GLES20.GL_LINES, 2, matrix, floatArrayOf(0f, 1f, 0f, 1f), 2)
+        draw(axes, GLES20.GL_LINES, 2, matrix, floatArrayOf(0f, 0.55f, 1f, 1f), 4)
+    }
+
+    private fun draw(vertices: FloatBuffer, mode: Int, count: Int, matrix: FloatArray, color: FloatArray, first: Int = 0) {
         GLES20.glUseProgram(program)
         vertices.position(0)
         GLES20.glVertexAttribPointer(positionLocation, 3, GLES20.GL_FLOAT, false, 12, vertices)
@@ -155,7 +161,7 @@ private class PrimitiveRenderer : GLSurfaceView.Renderer {
         GLES20.glUniformMatrix4fv(matrixLocation, 1, false, matrix, 0)
         GLES20.glUniform4fv(colorLocation, 1, color, 0)
         GLES20.glLineWidth(5f)
-        GLES20.glDrawArrays(mode, 0, count)
+        GLES20.glDrawArrays(mode, first, count)
         GLES20.glDisableVertexAttribArray(positionLocation)
     }
 

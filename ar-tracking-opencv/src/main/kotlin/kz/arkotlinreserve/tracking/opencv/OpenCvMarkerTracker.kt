@@ -63,9 +63,10 @@ class OpenCvMarkerTracker(dictionary: ArucoDictionary) : AutoCloseable {
         val ids = Mat()
         return try {
             detector.detectMarkers(image, corners, ids)
+            val markerIds = if (ids.empty()) IntArray(0) else IntArray(ids.total().toInt()).also { ids.get(0, 0, it) }
             val observations = buildList {
-                for (index in 0 until ids.rows()) {
-                    val id = ids.get(index, 0)[0].toInt()
+                for (index in 0 until minOf(markerIds.size, corners.size)) {
+                    val id = markerIds[index]
                     val definition = definitions[id] ?: continue
                     estimatePose(corners[index], definition, effectiveIntrinsics, timestampNanos)?.let(::add)
                 }
